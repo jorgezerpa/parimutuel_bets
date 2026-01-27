@@ -46,7 +46,9 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     event BetPlaced(uint256 indexed matchId, address indexed bettor, uint8 outcome, uint256 amount);
     event MatchSettled(uint256 indexed matchId, uint8 winningOutcome);
     event WinningsClaimed(uint256 indexed matchId, address indexed bettor, uint256 amount);
+    event RefundClaimed(uint256 indexed matchId, address indexed bettor, uint256 amount);
     event MatchCancelled(uint256 indexed matchId);
+    event NoWinners(uint256 indexed matchId);
 
     constructor() Ownable(msg.sender) {}
 
@@ -108,6 +110,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         // If no one bets on the winning outcome, then we enter into refund mode and protocol does not take fees here
         if (m.outcomePools[_winningOutcome] == 0) {         
             m.noWinners = true;
+            emit NoWinners(_matchId);
         }
         else {
             uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; // Dust remainders are acceptable @todo implement a sweep function or take them during withdrawFees
@@ -199,7 +202,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
         require(success, "Refund transfer failed");
 
-        emit WinningsClaimed(_matchId, msg.sender, refundAmount);
-        // @TODO instead of winningClaimed, create a refund event 
+        emit RefundClaimed(_matchId, msg.sender, refundAmount);
     }
 }
