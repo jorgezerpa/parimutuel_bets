@@ -125,6 +125,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         require(m.settled, "Not settled");
         require(!m.noWinners, "No winners for the bet"); // early return to avoid division by 0 in payout calculation
         require(m.winningOutcome>=1 && m.winningOutcome<=3, "Invalid outcome"); // RARE_EDGE_CASE when match is not setted winning outcome is 0, so we check is a valid value -> This should be not possible because of when settled this value is setted. But NEVER ASSUME ANYTHING! 
+        require(!hasClaimed[_matchId][msg.sender], "Already claimed");
         
         uint256 userBet = bets[_matchId][msg.sender][m.winningOutcome]; 
         require(userBet > 0, "No winning bet"); 

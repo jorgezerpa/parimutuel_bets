@@ -5,3 +5,4 @@
 ## For a first flight:
 - Do not consider the edge case -> Noone bets on outcome -> lock funds
 - Loss of funds due to rounding to 0
+- claimWinnings do not checks hasClaimed 
