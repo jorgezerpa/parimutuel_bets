@@ -19,8 +19,11 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         uint256 startTime;       // When betting closes -> match starts
         uint256 totalPool;       // Total ETH in the pool
         uint8 winningOutcome;    // 1: Team A, 2: Team B, 3: Draw
-        // @dev 1 + 2 + 3 should be equal to totalPool
+        // @INVARIANT 1 + 2 + 3 should be equal to totalPool
         mapping(uint8 => uint256) outcomePools; // Logic: 1 => Team A Pool, 2 => Team B Pool, etc. -> tracks  how much money on each outcome
+        // @INVARIANT 
+        // settled and cancelled can never be true at the same tame
+        // noWinners can only be true if settled is true 
         bool settled;            // Has the result been announced?
         bool cancelled;          // Has the match been cancelled?
         bool noWinners;          // True when noone bets on the outcome 
@@ -45,10 +48,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     event WinningsClaimed(uint256 indexed matchId, address indexed bettor, uint256 amount);
     event MatchCancelled(uint256 indexed matchId);
 
-    constructor() Ownable(msg.sender) {
-        // # @dev TODO -> Deploy 1 of this for token (and receive here in parms)
-        // OOORRR save the used token (or tokens) on the match data, so user can choose in what to pay (We need a withlisted address and an oracle if multiple tokens are allowed per match, if not, only add the addreess to the match and continue to the next one) 
-    }
+    constructor() Ownable(msg.sender) {}
 
     /**
      * @dev Create a new match. 
@@ -120,7 +120,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     /**
      * @dev Users claim their winnings using the CEI pattern.
      */
-     // @TODO make claimWinningWithSignature function or implement some delegation logic 
     function claimWinnings(uint256 _matchId) external nonReentrant {
         Match storage m = matches[_matchId];
         require(m.settled, "Not settled");
@@ -128,7 +127,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         require(m.winningOutcome>=1 && m.winningOutcome<=3, "Invalid outcome"); // RARE_EDGE_CASE when match is not setted winning outcome is 0, so we check is a valid value -> This should be not possible because of when settled this value is setted. But NEVER ASSUME ANYTHING! 
         
         uint256 userBet = bets[_matchId][msg.sender][m.winningOutcome]; 
-        require(userBet > 0, "No winning bet");
+        require(userBet > 0, "No winning bet"); 
 
         uint256 totalWinningPool = m.outcomePools[m.winningOutcome];
         uint256 netPool = m.totalPool - m.rakeAmount;
