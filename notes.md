@@ -1,0 +1,2 @@
+## Audit areas of concern
+- ClaimWinnings function -> already claimed require -> is it possible that this reverts even if the user still have funds on the match? -> @INVARIANT If this is true, then user has already claimed all -> so claim should send ALL user money
