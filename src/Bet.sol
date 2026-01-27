@@ -23,6 +23,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         mapping(uint8 => uint256) outcomePools; // Logic: 1 => Team A Pool, 2 => Team B Pool, etc. -> tracks  how much money on each outcome
         bool settled;            // Has the result been announced?
         bool cancelled;          // Has the match been cancelled?
+        bool noWinners;          // True when noone bets on the outcome 
         uint256 rakeAmount; // After match, now much was for the protocol from the total 
     }
 
@@ -34,7 +35,9 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public hasClaimed;
 
     uint256 public nextMatchId; // Id used when admin creates a new match
-    uint256 public constant RAKE_PERCENT = 3; // 3% Platform Fee
+    uint256 public constant RAKE_PERCENT = 300; // 3% Platform Fee
+    uint256 public constant BPS = 10000;
+
 
     event MatchCreated(uint256 indexed matchId, string description, uint256 startTime);
     event BetPlaced(uint256 indexed matchId, address indexed bettor, uint8 outcome, uint256 amount);
@@ -98,11 +101,18 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         require(!m.cancelled, "Match was cancelled"); // can not settle if cancelled
         require(_winningOutcome >= 1 && _winningOutcome <= 3, "Invalid outcome");
 
-        // Calculate Rake
-        uint256 rake = (m.totalPool * RAKE_PERCENT) / 100; // @audit possible precision loss  -> should work with BPS
-        m.rakeAmount = rake;
+        // set outcome
         m.winningOutcome = _winningOutcome;
         m.settled = true;
+
+        // If no one bets on the winning outcome, then we enter into refund mode and protocol does not take fees here
+        if (m.outcomePools[_winningOutcome] == 0) {         
+            m.noWinners = true;
+        }
+        else {
+            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; // Dust remainders are acceptable @todo implement a sweep function or take them during withdrawFees
+            m.rakeAmount = rake;
+        }
 
         emit MatchSettled(_matchId, _winningOutcome);
     }
@@ -114,6 +124,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     function claimWinnings(uint256 _matchId) external nonReentrant {
         Match storage m = matches[_matchId];
         require(m.settled, "Not settled");
+        require(!m.noWinners, "No winners for the bet"); // early return to avoid division by 0 in payout calculation
         require(m.winningOutcome>=1 && m.winningOutcome<=3, "Invalid outcome"); // RARE_EDGE_CASE when match is not setted winning outcome is 0, so we check is a valid value -> This should be not possible because of when settled this value is setted. But NEVER ASSUME ANYTHING! 
         
         uint256 userBet = bets[_matchId][msg.sender][m.winningOutcome]; 
@@ -122,10 +133,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         uint256 totalWinningPool = m.outcomePools[m.winningOutcome];
         uint256 netPool = m.totalPool - m.rakeAmount;
 
-        // @audit possible rounding error -> I think not because first mul then divide and @INVARIANT totalwinningpool should never be more than netPool.  
-        // @audit formula is wrong? -> should be % of userBet of the outcome pool times the total amount
-        // it means -> (userBet / totalWinningPool) 
-        // Formula: (User stake / Total winning pool) * Net Pot -> I think below is the same written different. @audit to confirm this @TODO 
         uint256 payout = (userBet * netPool) / totalWinningPool;
 
         // Update state before transfer (CEI Pattern)
@@ -159,15 +166,17 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     }
 
     /**
-    * @dev Allows users to reclaim their stakes if a match is cancelled.
+    * @dev Allows users to reclaim their stakes if a match is cancelled or no winners after set
     * @param _matchId The ID of the cancelled match.
     */
     function claimRefund(uint256 _matchId) external nonReentrant {
         Match storage m = matches[_matchId];
         
         // Checks
-        require(!m.settled, "Match already settled"); // @dev unnecessary check? could be removed?
-        require(m.cancelled, "Match not cancelled");
+        require(
+            (!m.settled && m.cancelled) || (m.settled && m.noWinners),
+            "Refunds are not active for this match" 
+        );
         require(!hasClaimed[_matchId][msg.sender], "Already refunded/claimed");
 
         // Calculate total amount user put into this match across all outcomes
