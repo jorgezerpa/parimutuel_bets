@@ -4,6 +4,11 @@ pragma solidity ^0.8.13;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+// @todo Implement NFTs -> NOT TRANSFERABLE? 
+// options:
+// - a modifieble one that updates records of wins and losses and other metadata -> this allows to count for rows and set bonuses, for example 
+// - mint one per winned bet
+
 /**
  * @title ParimutuelSportsBetting
  * @dev A pool-based sports betting contract where winners split the pot.
@@ -30,6 +35,9 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         uint256 rakeAmount; // After match, now much was for the protocol from the total 
     }
 
+    uint256 public constant RAKE_PERCENT = 300; // 3% Platform Fee
+    uint256 public constant BPS = 10000;
+
     // MatchID => Match Data
     mapping(uint256 => Match) public matches;
     // MatchID => UserAddress => Outcome => Amount
@@ -38,9 +46,13 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public hasClaimed;
 
     uint256 public nextMatchId; // Id used when admin creates a new match
-    uint256 public constant RAKE_PERCENT = 300; // 3% Platform Fee
-    uint256 public constant BPS = 10000;
 
+    // Tracks the amount of assets owed to the betters -> is the minimun required balance needed to pay out any single unclaimed/unrefunded bet 
+    // When a bet is placed, totalLiability += msg.value.
+    // When a user claims/refunds, totalLiability -= payout.
+    // When owner withdraws fees, totalLiability -= rake.
+    // Any balance where address(this).balance > totalLiability is safe to sweep.
+    uint256 public totalLiability; // @INVARIANT totalLiability should never be greater than contract balance. SO ALWAYS totalLiability <= contract.balance
 
     event MatchCreated(uint256 indexed matchId, string description, uint256 startTime);
     event BetPlaced(uint256 indexed matchId, address indexed bettor, uint8 outcome, uint256 amount);
@@ -87,6 +99,8 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         m.outcomePools[_outcome] += msg.value;
         bets[_matchId][msg.sender][_outcome] += msg.value;
 
+        totalLiability += msg.value;
+
         emit BetPlaced(_matchId, msg.sender, _outcome, msg.value);
     }
 
@@ -113,7 +127,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
             emit NoWinners(_matchId);
         }
         else {
-            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; // Dust remainders are acceptable @todo implement a sweep function or take them during withdrawFees
+            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; 
             m.rakeAmount = rake;
         }
 
@@ -140,6 +154,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
 
         // Update state before transfer (CEI Pattern)
         hasClaimed[_matchId][msg.sender] = true;
+        totalLiability -= payout; // If payout calculation left some dust, then totalLiability will be less than contract balance -> that diff will be added to withdrawed amount when owner withdraw fees. 
 
         // Interaction -> CEI + Reentrancy check = Gorgeous security :)
         (bool success, ) = payable(msg.sender).call{value: payout}("");
@@ -155,10 +170,27 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         Match storage m = matches[_matchId];
         require(m.settled, "Match must be settled");
         uint256 amount = m.rakeAmount;
+
         m.rakeAmount = 0; // Reset rake to prevent double withdrawal -> So even if owner is compromised, attacker can not withdraw fees from users' portion
+        
+        totalLiability -= amount;
 
         (bool success, ) = payable(owner()).call{value: amount}("");
         require(success, "Fee withdrawal failed");
+    }
+
+    /**
+    * @dev Sweeps any ETH that is not accounted for in the totalLiability.
+    * This captures rounding dust and accidental transfers.
+    */
+    function recoverETH() external onlyOwner {
+        uint256 balance = address(this).balance;
+        
+        if (balance > totalLiability) {
+            uint256 dust = balance - totalLiability;
+            (bool success, ) = payable(owner()).call{value: dust}("");
+            require(success, "Sweep failed");
+        }
     }
 
     // Optional: Emergency refund logic if match is cancelled
@@ -184,6 +216,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
 
         // Calculate total amount user put into this match across all outcomes
         uint256 refundAmount = 0;
+        // @todo FIX FOR BELOW -> CHECK IF ALREADY BET ON THIS MATCH, SO ONLY 1 BET PER MATCH 
         // @audit@IMPORTANT -> allow the user to only select one option -> can bet on all and (almost) secure wins -> also, he can just create another wallet so this measure could be stupid
         // @^ but this will make the bet not interesting? like I and 10 on 1,2,3 so I will get 30 back -> If all makes that, it does not incentive -> but still incenvise put it one? analize this  -> but is sec stragegy if not all makes this, so suffer the ones which put all in one -> but this ones has mor % if winsss... aaaaaaaa
         for (uint8 i = 1; i <= 3; i++) {
@@ -197,6 +230,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
 
         // Effects
         hasClaimed[_matchId][msg.sender] = true;
+        totalLiability -= refundAmount;
 
         // Interactions
         (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
