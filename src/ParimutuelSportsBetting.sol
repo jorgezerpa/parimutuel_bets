@@ -52,7 +52,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public hasClaimed;
 
     uint256 public nextMatchId;
-    uint256 public totalLiability;
 
     event MatchCreated(uint256 indexed matchId, string description, uint256 startTime);
     event BetPlaced(uint256 indexed matchId, address indexed bettor, uint8 outcome, uint256 amount);
@@ -97,16 +96,12 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         m.outcomePools[_outcome] += msg.value;
         bets[_matchId][msg.sender][_outcome] += msg.value;
 
-        totalLiability += msg.value;
-
         emit BetPlaced(_matchId, msg.sender, _outcome, msg.value);
     }
 
     function settleMatch(uint256 _matchId, uint8 _winningOutcome) external onlyOwner {
         Match storage m = matches[_matchId];
 
-        // @audit it is safe to remove this revert? -> if not, I should move it after the match not exists test
-        // if (m.totalPool == 0) revert NoBetsInPool(); // @audit actually if no bets, we just cancel the game. But, should I allow to settle this even if no winners? what implies to make this?
         if (m.startTime == 0) revert MatchNotExists();
         if (block.timestamp < m.startTime) revert MatchNotStarted();
         if (m.settled) revert AlreadySettled();
@@ -116,11 +111,11 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         m.winningOutcome = _winningOutcome;
         m.settled = true;
 
-        if (m.outcomePools[_winningOutcome] == 0) {         
-            m.noWinners = true;
+        if (m.outcomePools[_winningOutcome] == 0) {  // @INVARIANT IF match.totalPool is 0, then each one of the correspondant outcome Pools should be 0       
+            m.noWinners = true; 
             emit NoWinners(_matchId);
         } else {
-            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; 
+            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; // @notice totalPool must be equal or bigger than BPS/RAKE_PERCENT so this operation does not round to 0. For the actual configuration is 33.3333 ~= 34 (acceptable really low value) -> @audit we assume this is not risky, but could it be? -> i.e a bettor could perform millions of small bets so do not pay rake,  but this will be non profitable due to absurd gas consumption 
             m.rakeAmount = rake;
         }
 
@@ -143,7 +138,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         uint256 payout = (userBet * netPool) / totalWinningPool;
 
         hasClaimed[_matchId][msg.sender] = true;
-        totalLiability -= payout;
 
         (bool success, ) = payable(msg.sender).call{value: payout}("");
         if (!success) revert TransferFailed();
@@ -157,19 +151,9 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         uint256 amount = m.rakeAmount;
 
         m.rakeAmount = 0;
-        totalLiability -= amount;
 
         (bool success, ) = payable(owner()).call{value: amount}("");
         if (!success) revert TransferFailed();
-    }
-
-    function recoverETH() external onlyOwner {
-        uint256 balance = address(this).balance;
-        if (balance > totalLiability) {
-            uint256 dust = balance - totalLiability;
-            (bool success, ) = payable(owner()).call{value: dust}("");
-            if (!success) revert TransferFailed();
-        }
     }
 
     function cancelMatch(uint256 _matchId) external onlyOwner {
@@ -194,7 +178,6 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         if (refundAmount == 0) revert NoFundsToRefund();
 
         hasClaimed[_matchId][msg.sender] = true;
-        totalLiability -= refundAmount;
 
         (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
         if (!success) revert TransferFailed();

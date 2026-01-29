@@ -108,7 +108,6 @@ contract ParimutuelTest is Test {
 
         // Assertions
         assertEq(address(parimutuel).balance, betAmount);
-        assertEq(parimutuel.totalLiability(), betAmount);
         
         // Verify storage updates
         (,,,,uint256 totalPool,,,,,) = parimutuel.matches(0);
@@ -235,21 +234,9 @@ contract ParimutuelTest is Test {
 
         // Withdraw Fees
         vm.prank(owner);
-        parimutuel.withdrawFees(matchId);
-
-        // Check if there is "Dust" (leftover wei due to rounding)
-        // totalLiability should be 0 now, so anything left in balance is dust
-        uint256 dust = address(parimutuel).balance;
-        
-        uint256 ownerBalanceBefore = owner.balance;
-        vm.prank(owner);
-        parimutuel.recoverETH();
-        uint256 ownerBalanceAfter = owner.balance;
-
-        // console.log(ownerBalanceAfter, ownerBalanceBefore, dust, address(parimutuel).balance);
-        // assertEq(ownerBalanceAfter - ownerBalanceBefore, dust, "Owner should recover the exact dust amount");
-        // assertEq(address(parimutuel).balance, 0, "Contract should be empty after recovery");
-        
+        parimutuel.withdrawFees(matchId);        
+    
+        // Assert 
     }
 
     // @todo test no winner tries to claim 
@@ -415,7 +402,7 @@ contract ParimutuelTest is Test {
 // 2. Betting Logic & Timing
 // These tests check the core "money-in" phase of the contract.
 
-// test_PlaceBet_Success: Validates that a user can place a bet, the contract balance increases, and the totalLiability tracks the deposit.
+// test_PlaceBet_Success: Validates that a user can place a bet, and the contract balance increases
 
 // test_Revert_PlaceBet_AfterStart: Checks the "Lock" mechanism, ensuring no one can bet once the match startTime has passed (BettingClosed).
 
