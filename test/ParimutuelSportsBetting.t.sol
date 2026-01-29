@@ -202,41 +202,69 @@ contract ParimutuelTest is Test {
         assertEq(balanceAfter - balanceBefore, expectedPayout, "Alice did not receive the correct proportional share");
     }
 
-    // @TODO redo the logic to calculate dust 
-    function test_PayoutPrecision_And_DustRecovery() public {
+    // some dust values are acceptable (@todo comment this to auditors) so we check that scenario here 
+    // @TODO@dev write a stateful and stateless fuzz test -> it should revert d
+    function test_PayoutPrecision_And_Dust() public {
         uint256 startTime = block.timestamp + 1 hours;
         vm.prank(owner);
         parimutuel.createMatch("Team A", "Team B", "Dust Test", startTime);
         uint256 matchId = 0;
 
-        // Alice and Bob bet on the SAME outcome with "messy" numbers
-        // Alice: 10 ETH, Bob: 3.33 ETH -> Total Winning Pool: 13.33 ETH
+        // 1. Setup bets
+        // Winning Outcome (1) total: 13.33 ETH
         vm.prank(alice);
         parimutuel.placeBet{value: 10 ether}(matchId, 1);
         vm.prank(bob);
         parimutuel.placeBet{value: 3.33 ether}(matchId, 1);
 
-        // Charlie loses with 20 ETH
+        // Losing Outcome (2) total: 20 ETH
         vm.prank(charlie);
         parimutuel.placeBet{value: 20 ether}(matchId, 2);
 
+        // 2. Settle
         vm.warp(startTime + 1);
         vm.prank(owner);
         parimutuel.settleMatch(matchId, 1);
 
-        // Claim for Alice
+        // 3. Manual Math for Assertions
+        // Total Pool: 33.33 ETH
+        // Rake (3%): (33.33 * 300) / 10000 = 0.9999 ETH
+        // Net Pool: 33.33 - 0.9999 = 32.3301 ETH
+        // Total Winning Pool: 13.33 ETH
+        
+        uint256 totalPool = 33.33 ether;
+        uint256 winningPool = 13.33 ether;
+        uint256 rake = (totalPool * parimutuel.RAKE_PERCENT()) / parimutuel.BPS();
+        uint256 netPool = totalPool - rake;
+
+        uint256 expectedAlice = (10 ether * netPool) / winningPool;
+        uint256 expectedBob = (3.33 ether * netPool) / winningPool;
+
+        // 4. Execution
+        uint256 alicePre = alice.balance;
         vm.prank(alice);
         parimutuel.claimWinnings(matchId);
-
-        // Claim for Bob
+        
+        uint256 bobPre = bob.balance;
         vm.prank(bob);
         parimutuel.claimWinnings(matchId);
 
-        // Withdraw Fees
+        uint256 ownerPre = owner.balance;
         vm.prank(owner);
-        parimutuel.withdrawFees(matchId);        
-    
-        // Assert 
+        parimutuel.withdrawFees(matchId);
+
+        // 5. Assertions
+        assertEq(alice.balance - alicePre, expectedAlice, "Alice payout mismatch");
+        assertEq(bob.balance - bobPre, expectedBob, "Bob payout mismatch");
+        assertEq(owner.balance - ownerPre, rake, "Owner rake mismatch");
+
+        // 6. Dust Check
+        // The contract should have a tiny amount of wei left over due to rounding down
+        uint256 remainingDust = address(parimutuel).balance;
+        assertTrue(remainingDust == 1, "Dust is higher than expected for these values");
+        
+        // Final sanity check: Alice + Bob + Owner + Dust == Total Initial Pool
+        assertEq(expectedAlice + expectedBob + rake + remainingDust, totalPool, "Accounting error");
     }
 
     // @todo test no winner tries to claim 
