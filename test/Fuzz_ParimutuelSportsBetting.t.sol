@@ -28,8 +28,10 @@ contract ParimutuelTest is Test {
         vm.deal(charlie, type(uint96).max);
     }
 
-    // Analize how the protocol behaves when user's inputs cause not-precise operations 
-    function testFuzz_PayoutPrecision_And_Dust(
+    // Analize how the protocol behaves with different user's inputs, for example, some inputs may cause some dust to stay in the contract
+    // But in any case, the protocol must always being able to stay solvent to user claims (should never revert out of funds when a legitime user tries to claim) 
+    // Also, we check for a maximun amount of allowed dust. More of 1 wei per claim, is considered a leak. 
+    function testFuzz_PayoutPrecision_And_Solvency(
         uint256 _aliceBet,
         uint256 _bobBet,
         uint256 _charlieBet
