@@ -5,6 +5,7 @@
 - Do not consider the edge case -> Noone bets on outcome -> lock funds
 - Loss of funds due to rounding to 0
 - claimWinnings do not checks hasClaimed 
+- Calculate user claim amount without substracting Fee percentage -> insolvency for protocol cause bettor will get more than supposed 
 
 ## INVARIANTS
 - Winners claimed amount should always be bigger than their initial bet  
