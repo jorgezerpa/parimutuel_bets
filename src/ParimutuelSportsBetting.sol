@@ -111,11 +111,15 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         m.winningOutcome = _winningOutcome;
         m.settled = true;
 
-        if (m.outcomePools[_winningOutcome] == 0) {  // @INVARIANT IF match.totalPool is 0, then each one of the correspondant outcome Pools should be 0       
+        if (m.outcomePools[_winningOutcome] == 0) {      
             m.noWinners = true; 
             emit NoWinners(_matchId);
         } else {
-            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; // @notice totalPool must be equal or bigger than BPS/RAKE_PERCENT so this operation does not round to 0. For the actual configuration is 33.3333 ~= 34 (acceptable really low value) -> @audit we assume this is not risky, but could it be? -> i.e a bettor could perform millions of small bets so do not pay rake,  but this will be non profitable due to absurd gas consumption 
+            // @notice the only way this rounds to 0 is when total pool is less than 34 (precisely 33.333) because 300*34>10000 
+            // For tokens with low decimals (like usdc/usdt) this could reduce the amount of fees for the protocol.
+            // But, this is unsuitable due to high gas fees (for usdt, attacker must make 10000 TXs to bet 1 dollar free of fees)
+            // Also, this still could accumulate dust on the contract, so may set a constraint for this is ok. @audit 
+            uint256 rake = (m.totalPool * RAKE_PERCENT) / BPS; 
             m.rakeAmount = rake;
         }
 
@@ -147,6 +151,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     function withdrawFees(uint256 _matchId) external onlyOwner nonReentrant {
         Match storage m = matches[_matchId];
         if (!m.settled) revert NotSettled();
+        // @audit if settled but no winners, should I add an early revert? -> because if so, it will make a 0 transfer expending gas -> low 
         uint256 amount = m.rakeAmount;
 
         m.rakeAmount = 0;

@@ -23,15 +23,14 @@ contract ParimutuelTest is Test {
         parimutuel = deployer.run();
 
         // 4. Fund our test actors with some ETH
-        vm.deal(alice, type(uint96).max);
-        vm.deal(bob, type(uint96).max);
-        vm.deal(charlie, type(uint96).max);
+        vm.deal(alice, type(uint128).max);
+        vm.deal(bob, type(uint128).max);
+        vm.deal(charlie, type(uint128).max);
     }
 
     // Analize how the protocol behaves with different user's inputs, for example, some inputs may cause some dust to stay in the contract
     // But in any case, the protocol must always being able to stay solvent to user claims (should never revert out of funds when a legitime user tries to claim) 
     // Also, we check for a maximun amount of allowed dust. More of 1 wei per claim, is considered a leak. 
-    // @TODO YES! MAKE ANOTHER TEST AND BOUND RANDOM AMOUNTS TO >0 SO AVOID "NoWinnersForOutcome"... make it more random, make the winning pool random too -> this should test so much more scenarios -> thats good or bad? better to write another separated test?
     function testFuzz_PayoutPrecision_And_Solvency(
         uint256 _aliceBet,
         uint256 _bobBet,
@@ -118,6 +117,100 @@ contract ParimutuelTest is Test {
         assertEq(expectedAlice + expectedBob + rake + remainingDust, totalPool, "Accounting error");
     }
 
+    function testFuzz_PayoutPreciion_multipleBetsOnSameMatch(
+        uint256 _aliceBet0,
+        uint256 _aliceBet1,
+        uint256 _aliceBet2,
+        uint256 _bobBet0,
+        uint256 _bobBet1,
+        uint256 _bobBet2,
+        uint256 _charlieBet0,
+        uint256 _charlieBet1,
+        uint256 _charlieBet2
+    ) public {
+        uint256 aliceBet0 = bound(_aliceBet0, 1, type(uint96).max);
+        uint256 aliceBet1 = bound(_aliceBet1, 1, type(uint96).max);
+        uint256 aliceBet2 = bound(_aliceBet2, 1, type(uint96).max);
+        uint256 bobBet0 = bound(_bobBet0, 1, type(uint96).max);
+        uint256 bobBet1 = bound(_bobBet1, 1, type(uint96).max);
+        uint256 bobBet2 = bound(_bobBet2, 1, type(uint96).max);
+        uint256 charlieBet0 = bound(_charlieBet0, 1, type(uint96).max);
+        uint256 charlieBet1 = bound(_charlieBet1, 1, type(uint96).max);
+        uint256 charlieBet2 = bound(_charlieBet2, 1, type(uint96).max);
+
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Precision test", startTime);
+        uint256 matchId = 0;
+
+        // 1. Setup bets
+        vm.startPrank(alice);
+        parimutuel.placeBet{value: aliceBet0}(matchId, 1);
+        parimutuel.placeBet{value: aliceBet1}(matchId, 2);
+        parimutuel.placeBet{value: aliceBet2}(matchId, 3);
+        vm.stopPrank();
+        vm.startPrank(bob);
+        parimutuel.placeBet{value: bobBet0}(matchId, 1);
+        parimutuel.placeBet{value: bobBet1}(matchId, 2);
+        parimutuel.placeBet{value: bobBet2}(matchId, 3);
+        vm.stopPrank();
+        vm.startPrank(charlie);
+        parimutuel.placeBet{value: charlieBet0}(matchId, 1);
+        parimutuel.placeBet{value: charlieBet1}(matchId, 2);
+        parimutuel.placeBet{value: charlieBet2}(matchId, 3);
+        vm.stopPrank();
+
+        // 2. Settle
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 1);
+
+        // 3. Calculate expected values
+        uint256 totalPool = aliceBet0 + aliceBet1 + aliceBet2 + bobBet0 + bobBet1 + bobBet2 + charlieBet0 + charlieBet1 + charlieBet2;
+        uint256 winningPool = aliceBet0 + bobBet0 + charlieBet0;
+        uint256 rake = (totalPool * parimutuel.RAKE_PERCENT()) / parimutuel.BPS();
+        uint256 netPool = totalPool - rake;
+
+        uint256 expectedAlice = (aliceBet0 * netPool) / winningPool;
+        uint256 expectedBob = (bobBet0 * netPool) / winningPool;
+        uint256 expectedCharlie = (charlieBet0 * netPool) / winningPool;
+       
+        // 4. Execution
+        uint256 alicePre = alice.balance;
+        vm.prank(alice);
+        parimutuel.claimWinnings(matchId);
+        
+        uint256 bobPre = bob.balance;
+        vm.prank(bob);
+        parimutuel.claimWinnings(matchId);
+
+        uint256 charliePre = charlie.balance;
+        vm.prank(charlie);
+        parimutuel.claimWinnings(matchId);
+
+        uint256 ownerPre = owner.balance;
+        vm.prank(owner);
+        parimutuel.withdrawFees(matchId);
+
+        // 5. Assertions
+        assertEq(alice.balance - alicePre, expectedAlice, "Alice payout mismatch");
+        assertEq(bob.balance - bobPre, expectedBob, "Bob payout mismatch");
+        assertEq(charlie.balance - charliePre, expectedCharlie, "Charlie payout mismatch");
+        assertEq(owner.balance - ownerPre, rake, "Owner rake mismatch");
+
+        // 6. Dust Check
+        // The contract should have a tiny amount of wei left over due to rounding down
+        uint256 remainingDust = address(parimutuel).balance;
+    
+        // Lower than the number of winners (since each claimWinnings can leave at most 1 wei as dust)
+        // All make bets on 3 outcomes, so all 3 are winners
+        assertTrue(remainingDust < 3, "Dust is higher than expected for these values - possible precision leak");
+        
+        // Final sanity check: Alice + Bob + Owner + Dust == Total Initial Pool
+        assertEq(expectedAlice + expectedBob + expectedCharlie + rake + remainingDust, totalPool, "Accounting error");
+    }
+
 }
+
 
  
