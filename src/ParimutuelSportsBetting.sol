@@ -88,7 +88,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     function placeBet(uint256 _matchId, uint8 _outcome) external payable nonReentrant {
         Match storage m = matches[_matchId];
         if (block.timestamp >= m.startTime) revert BettingClosed();
-        if (m.settled || m.cancelled) revert MatchNotActive();
+        if (m.cancelled) revert MatchNotActive();
         if (_outcome < 1 || _outcome > 3) revert InvalidOutcome();
         if (msg.value == 0) revert BetAmountZero();
 
@@ -125,8 +125,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     function claimWinnings(uint256 _matchId) external nonReentrant {
         Match storage m = matches[_matchId];
         if (!m.settled) revert NotSettled();
-        if (m.noWinners) revert NoWinnersForOutcome();
-        if (m.winningOutcome < 1 || m.winningOutcome > 3) revert InvalidOutcome(); 
+        if (m.noWinners) revert NoWinnersForOutcome(); // Early revert to save gas -> it still is handled bellow when checks for user bet amount
         if (hasClaimed[_matchId][msg.sender]) revert AlreadyClaimed();
         
         uint256 userBet = bets[_matchId][msg.sender][m.winningOutcome]; 

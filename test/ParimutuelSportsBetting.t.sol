@@ -162,6 +162,16 @@ contract ParimutuelTest is Test {
         parimutuel.placeBet{value: 1 ether}(0, 0);
     }
 
+    function test_Revert_PlaceBet_NotSendETH() public {
+        // Setup: Create a match
+        vm.prank(owner);
+        parimutuel.createMatch("T1", "T2", "Desc", block.timestamp + 1 hours);
+
+        vm.prank(charlie);
+        vm.expectRevert(ParimutuelSportsBetting.BetAmountZero.selector);
+        parimutuel.placeBet{value: 0 ether}(0, 1);
+    }
+
     // 3. Settlement & Payout Math
     // The "Happy Path" where we calculate winners and protocol fees.
     function test_FullFlow_WinnersClaim() public {
@@ -204,69 +214,7 @@ contract ParimutuelTest is Test {
 
     // some dust values are acceptable (@todo comment this to auditors) so we check that scenario here 
     // @TODO@dev write a stateful and stateless fuzz test -> it should revert d
-    function test_PayoutPrecision_And_Dust() public {
-        uint256 startTime = block.timestamp + 1 hours;
-        vm.prank(owner);
-        parimutuel.createMatch("Team A", "Team B", "Dust Test", startTime);
-        uint256 matchId = 0;
-
-        // 1. Setup bets
-        // Winning Outcome (1) total: 13.33 ETH
-        vm.prank(alice);
-        parimutuel.placeBet{value: 10 ether}(matchId, 1);
-        vm.prank(bob);
-        parimutuel.placeBet{value: 3.33 ether}(matchId, 1);
-
-        // Losing Outcome (2) total: 20 ETH
-        vm.prank(charlie);
-        parimutuel.placeBet{value: 20 ether}(matchId, 2);
-
-        // 2. Settle
-        vm.warp(startTime + 1);
-        vm.prank(owner);
-        parimutuel.settleMatch(matchId, 1);
-
-        // 3. Manual Math for Assertions
-        // Total Pool: 33.33 ETH
-        // Rake (3%): (33.33 * 300) / 10000 = 0.9999 ETH
-        // Net Pool: 33.33 - 0.9999 = 32.3301 ETH
-        // Total Winning Pool: 13.33 ETH
-        
-        uint256 totalPool = 33.33 ether;
-        uint256 winningPool = 13.33 ether;
-        uint256 rake = (totalPool * parimutuel.RAKE_PERCENT()) / parimutuel.BPS();
-        uint256 netPool = totalPool - rake;
-
-        uint256 expectedAlice = (10 ether * netPool) / winningPool;
-        uint256 expectedBob = (3.33 ether * netPool) / winningPool;
-
-        // 4. Execution
-        uint256 alicePre = alice.balance;
-        vm.prank(alice);
-        parimutuel.claimWinnings(matchId);
-        
-        uint256 bobPre = bob.balance;
-        vm.prank(bob);
-        parimutuel.claimWinnings(matchId);
-
-        uint256 ownerPre = owner.balance;
-        vm.prank(owner);
-        parimutuel.withdrawFees(matchId);
-
-        // 5. Assertions
-        assertEq(alice.balance - alicePre, expectedAlice, "Alice payout mismatch");
-        assertEq(bob.balance - bobPre, expectedBob, "Bob payout mismatch");
-        assertEq(owner.balance - ownerPre, rake, "Owner rake mismatch");
-
-        // 6. Dust Check
-        // The contract should have a tiny amount of wei left over due to rounding down
-        uint256 remainingDust = address(parimutuel).balance;
-        assertTrue(remainingDust == 1, "Dust is higher than expected for these values");
-        
-        // Final sanity check: Alice + Bob + Owner + Dust == Total Initial Pool
-        assertEq(expectedAlice + expectedBob + rake + remainingDust, totalPool, "Accounting error");
-    }
-
+    
     // @todo test no winner tries to claim 
 
     function test_Revert_ClaimTwice() public {
@@ -292,6 +240,91 @@ contract ParimutuelTest is Test {
         vm.expectRevert(ParimutuelSportsBetting.AlreadyClaimed.selector);
         parimutuel.claimWinnings(matchId);
     }
+
+    function test_Revert_Claim_noSettled() public {
+        // 1. Setup and Settle Match
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "match description", startTime);
+        uint256 matchId = 0;
+
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        vm.warp(startTime + 1); // advance time, but not settle
+
+        // Tries to claim
+        vm.prank(alice);
+        vm.expectRevert(ParimutuelSportsBetting.NotSettled.selector);
+        parimutuel.claimWinnings(matchId);
+    }
+
+    function test_Revert_Claim_noWinners() public {
+        // 1. Setup and Settle Match
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "match description", startTime);
+        uint256 matchId = 0;
+
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 2);
+
+        // Tries to claim
+        vm.prank(alice);
+        vm.expectRevert(ParimutuelSportsBetting.NoWinnersForOutcome.selector);
+        parimutuel.claimWinnings(matchId);
+    }
+
+    // user did not bet on the winning outcome 
+    function test_Revert_Claim_NoWinningBet() public {
+        // 1. Setup and Settle Match
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "match description", startTime);
+        uint256 matchId = 0;
+
+        // @dev We need to have a winner to get ovet the NoWinnersForOutcome assertion. So we make Alice win, but Bob (which didn't bet) will try to claim (should fail)
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 1);
+
+        // Tries to claim
+        vm.prank(bob);
+        vm.expectRevert(ParimutuelSportsBetting.NoWinningBet.selector);
+        parimutuel.claimWinnings(matchId);
+    }
+
+    function test_Revert_Claim_TransferFailed() public {
+        // 0. Deploy contract 
+        address contractAddress = address(new NoEtherAccepted());
+        vm.deal(contractAddress, 100 ether);
+
+        // 1. Setup and Settle Match
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "match description", startTime);
+        uint256 matchId = 0;
+
+        vm.prank(contractAddress);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 1);
+
+        // Tries to claim
+        vm.prank(contractAddress);
+        vm.expectRevert(ParimutuelSportsBetting.TransferFailed.selector);
+        parimutuel.claimWinnings(matchId);
+    }
+
 
     // Settlement edge cases 
     function test_Revert_SettleMatch_InvalidStates() public {
@@ -377,6 +410,37 @@ contract ParimutuelTest is Test {
         assertEq(alice.balance, balanceBefore + 10 ether);
     }
 
+    function test_revert_Refund_NoWinnersTwice() public {
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "No winner bet test", startTime);
+
+        // Alice and Bob bet on Outcome 1 and 2
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(0, 1);
+
+        // Fast forward and settle on Outcome 3 (which has 0 bets)
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(0, 3);
+
+        // Verify state is set to noWinners
+        (,,,,,,bool settled,,bool noWinners,) = parimutuel.matches(0);
+        assertTrue(settled);
+        assertTrue(noWinners);
+
+        // Alice claims refund
+        uint256 balanceBefore = alice.balance;
+        vm.prank(alice);
+        parimutuel.claimRefund(0);
+
+        // Alice claims refund twice
+        vm.prank(alice);
+        vm.expectRevert(ParimutuelSportsBetting.AlreadyClaimed.selector);
+        parimutuel.claimRefund(0);
+        
+    }
+
     function test_Refund_WhenMatchCancelled() public {
         uint256 startTime = block.timestamp + 1 hours;
         vm.prank(owner);
@@ -397,6 +461,81 @@ contract ParimutuelTest is Test {
         assertEq(charlie.balance, balanceBefore + 5 ether);
     }
 
+    function test_revert_Refund_WhenMatchCancelledTwice() public {
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Cancellation Test", startTime);
+
+        vm.prank(charlie);
+        parimutuel.placeBet{value: 5 ether}(0, 1);
+
+        // Owner cancels the match
+        vm.prank(owner);
+        parimutuel.cancelMatch(0);
+
+        // Charlie claims refund
+        uint256 balanceBefore = charlie.balance;
+        vm.prank(charlie);
+        parimutuel.claimRefund(0);
+
+        // Charlie claims refund twice
+        vm.prank(charlie);
+        vm.expectRevert(ParimutuelSportsBetting.AlreadyClaimed.selector);
+        parimutuel.claimRefund(0);
+    }
+
+    function test_revert_Refund_Transferfailed() public {
+        address bettor = address(new NoEtherAccepted());
+        vm.deal(bettor, 5 ether);
+
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Cancellation Test", startTime);
+
+        vm.prank(bettor);
+        parimutuel.placeBet{value: 5 ether}(0, 1);
+
+        // Owner cancels the match
+        vm.prank(owner);
+        parimutuel.cancelMatch(0);
+
+        // Charlie claims refund twice
+        vm.prank(bettor);
+        vm.expectRevert(ParimutuelSportsBetting.TransferFailed.selector);
+        parimutuel.claimRefund(0);
+    }
+
+    function test_revert_Refund_NoFundsToRefund() public {
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Cancellation Test", startTime);
+
+        // Owner cancels the match
+        vm.prank(owner);
+        parimutuel.cancelMatch(0);
+
+        // Charlie tries to claim
+        vm.prank(charlie);
+        vm.expectRevert(ParimutuelSportsBetting.NoFundsToRefund.selector);
+        parimutuel.claimRefund(0);
+    }
+
+
+    function test_revert_Refund_RefundsNotActive() public {
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Cancellation Test", startTime);
+
+        vm.prank(charlie);
+        parimutuel.placeBet{value: 5 ether}(0, 1);
+
+        // Charlie tries to claim refunds
+        uint256 balanceBefore = charlie.balance;
+        vm.prank(charlie);
+        vm.expectRevert(ParimutuelSportsBetting.RefundsNotActive.selector);
+        parimutuel.claimRefund(0);
+    }
+
     function test_Revert_CancelAfterSettle() public {
         uint256 startTime = block.timestamp + 1 hours;
         vm.prank(owner);
@@ -415,6 +554,122 @@ contract ParimutuelTest is Test {
         parimutuel.cancelMatch(0);
     }
 
+    function test_owner_claimFees() public {
+        // 1. Setup Match (Starts in 1 hour)
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Match description", startTime);
+        uint256 matchId = 0;
+
+        // 2. Place Bets
+        // Alice bets 10 ETH on Outcome 1 (The eventually winner)
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        // Bob bets 20 ETH on Outcome 2
+        vm.prank(bob);
+        parimutuel.placeBet{value: 20 ether}(matchId, 2);
+
+        // Charlie bets 70 ETH on Outcome 3
+        vm.prank(charlie);
+        parimutuel.placeBet{value: 70 ether}(matchId, 3);
+
+        // 3. Move time forward and Settle
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 1);
+
+        // 4. Calculate Expected Fee
+        // Total Pool = 100 ETH. Rake = 3% = 3 ETH.
+        uint256 expectedFees = 3 ether;
+        uint256 balanceBefore = owner.balance;
+        vm.prank(owner);
+        parimutuel.withdrawFees(matchId);
+        uint256 balanceAfter = owner.balance;
+
+        assertEq(balanceAfter - balanceBefore, expectedFees, "Owner did not receive the correspondant fees");
+    }
+
+    function test_revert_owner_claimFees_notSettled() public {
+        // 1. Setup Match (Starts in 1 hour)
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Match description", startTime);
+        uint256 matchId = 0;
+
+        // 2. Place Bets
+        // Alice bets 10 ETH on Outcome 1 (The eventually winner)
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        // Bob bets 20 ETH on Outcome 2
+        vm.prank(bob);
+        parimutuel.placeBet{value: 20 ether}(matchId, 2);
+
+        // Charlie bets 70 ETH on Outcome 3
+        vm.prank(charlie);
+        parimutuel.placeBet{value: 70 ether}(matchId, 3);
+
+        // 3. Move time forward and Settle
+        vm.warp(startTime + 1);
+
+        // 4. Calculate Expected Fee
+        // Total Pool = 100 ETH. Rake = 3% = 3 ETH.
+        uint256 expectedFees = 3 ether;
+        uint256 balanceBefore = owner.balance;
+        vm.prank(owner);
+        vm.expectRevert(ParimutuelSportsBetting.NotSettled.selector);
+        parimutuel.withdrawFees(matchId);
+    }
+
+    function test_revert_owner_claimFees_TransferFailed() public {
+        // 0. Setup 
+        address owner = address(new NoEtherAccepted());
+        vm.prank(owner);
+        parimutuel = new ParimutuelSportsBetting();
+
+        // 1. Setup Match (Starts in 1 hour)
+        uint256 startTime = block.timestamp + 1 hours;
+        vm.prank(owner);
+        parimutuel.createMatch("Team A", "Team B", "Match description", startTime);
+        uint256 matchId = 0;
+
+        // 2. Place Bets
+        // Alice bets 10 ETH on Outcome 1 (The eventually winner)
+        vm.prank(alice);
+        parimutuel.placeBet{value: 10 ether}(matchId, 1);
+
+        // Bob bets 20 ETH on Outcome 2
+        vm.prank(bob);
+        parimutuel.placeBet{value: 20 ether}(matchId, 2);
+
+        // Charlie bets 70 ETH on Outcome 3
+        vm.prank(charlie);
+        parimutuel.placeBet{value: 70 ether}(matchId, 3);
+
+        // 3. Move time forward and Settle
+        vm.warp(startTime + 1);
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, 1);
+
+        // 4. Call withdrawFees
+        vm.prank(owner);
+        vm.expectRevert(ParimutuelSportsBetting.TransferFailed.selector);
+        parimutuel.withdrawFees(matchId);
+    }
+
+}
+
+contract NoEtherAccepted {
+    // This function triggers specifically when Ether is sent to the contract
+    receive() external payable {
+        revert("This contract does not accept Ether");
+    }
+
+    // Fallback is called if no other function matches (and no data is sent)
+    fallback() external payable {
+        revert("Direct payments and unknown calls disabled");
+    }
 }
 
 

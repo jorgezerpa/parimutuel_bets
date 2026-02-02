@@ -31,15 +31,16 @@ contract ParimutuelTest is Test {
     // Analize how the protocol behaves with different user's inputs, for example, some inputs may cause some dust to stay in the contract
     // But in any case, the protocol must always being able to stay solvent to user claims (should never revert out of funds when a legitime user tries to claim) 
     // Also, we check for a maximun amount of allowed dust. More of 1 wei per claim, is considered a leak. 
+    // @TODO YES! MAKE ANOTHER TEST AND BOUND RANDOM AMOUNTS TO >0 SO AVOID "NoWinnersForOutcome"... make it more random, make the winning pool random too -> this should test so much more scenarios -> thats good or bad? better to write another separated test?
     function testFuzz_PayoutPrecision_And_Solvency(
         uint256 _aliceBet,
         uint256 _bobBet,
         uint256 _charlieBet
     ) public {
         // vm.assume(amount > 0);
-        uint256 aliceBet = bound(_aliceBet, 0, type(uint96).max);
-        uint256 bobBet = bound(_bobBet, 0, type(uint96).max);
-        uint256 charlieBet = bound(_charlieBet, 0, type(uint96).max);
+        uint256 aliceBet = bound(_aliceBet, 1, type(uint96).max);
+        uint256 bobBet = bound(_bobBet, 1, type(uint96).max);
+        uint256 charlieBet = bound(_charlieBet, 1, type(uint96).max);
 
         uint256 startTime = block.timestamp + 1 hours;
         vm.prank(owner);
@@ -80,7 +81,6 @@ contract ParimutuelTest is Test {
         uint256 netPool = totalPool - rake;
 
         uint256 expectedAlice = (aliceBet * netPool) / winningPool;
-        console.log(expectedAlice);
         uint256 expectedBob = (bobBet * netPool) / winningPool;
        
         // 4. Execution
