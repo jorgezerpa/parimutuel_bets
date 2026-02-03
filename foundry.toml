@@ -6,6 +6,11 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@chainlink/contracts/=lib/chainlink-evm/contracts/"
 ]
-coverage_ignore = ['test/**']
+
+[invariant]
+runs = 10
+depth = 100
+fail_on_revert = true
+seed = '0x42'
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

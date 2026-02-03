@@ -72,6 +72,11 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
         return matches[_matchId].outcomePools[_outcome];
     }
 
+    function getTotalPool(uint256 _matchId) public view returns (uint256) {
+        return matches[_matchId].totalPool;
+    }
+
+
     function createMatch(string memory _team1, string memory _team2, string memory _description, uint256 _startTime) external onlyOwner {
         if (_startTime <= block.timestamp) revert InvalidStartTime();
         
