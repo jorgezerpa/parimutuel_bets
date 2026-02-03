@@ -43,11 +43,15 @@ contract ParimutuelStatefulTest is Test {
         // }));
     }
 
-    function invariant_quick() public view {
-        uint256 nextMatchId = parimutuel.nextMatchId();
-        assertEq(handler.ghost_matchesCount(), nextMatchId);
+    /// @dev Invariant: Contract balance must always match our ghost accounting
+    function invariant_solvency() public view {
+        uint256 expectedBalance = handler.ghost_totalDeposited() - handler.ghost_totalWithdrawn();
+        assertEq(address(parimutuel).balance, expectedBalance, "Solvency Mismatch");
+    }
 
-        for(uint256 i = 0; i<nextMatchId; i++) {
+    /// @dev Invariant: The sum of outcome pools must equal total pool
+    function invariant_poolConsistency() public view {
+        for(uint256 i = 0; i<handler.ghost_matchesCount(); i++) {
             uint256 outcome1 = parimutuel.getOutcomePool(i, 1);
             uint256 outcome2 = parimutuel.getOutcomePool(i, 2);
             uint256 outcome3 = parimutuel.getOutcomePool(i, 3);
@@ -60,6 +64,15 @@ contract ParimutuelStatefulTest is Test {
             assertEq(outcomeTotal, parimutuel.getTotalPool(i));
         }
     }
+
+    /// @dev Invariant: Rake cannot exceed the defined 3% BPS
+    function invariant_rakeLimit() public view {
+        for (uint256 i = 0; i < handler.ghost_matchesCount(); i++) {
+            (,,,,uint256 totalPool,,,,,uint256 rakeAmount) = parimutuel.matches(i);
+            uint256 maxRake = (totalPool * parimutuel.RAKE_PERCENT()) / parimutuel.BPS();
+            assertLe(rakeAmount, maxRake, "Rake exceeded 3%");
+        }
+    }
 }
 
 // @notice on the catch of each function, we assert if the revert was for an unexpected error for the input we are handling. i.e place
@@ -70,8 +83,12 @@ contract ParimutuelHandler is Test {
 
     // GHOSTS
     uint256 public ghost_matchesCount = 0;
+    uint256 public ghost_totalDeposited = 0;
+    uint256 public ghost_totalWithdrawn = 0;
+
     mapping(uint256 matchId => mapping(uint8 outcome => uint256 totalAmount)) public betAmountsPerOutcome;
     mapping(uint256 matchId => uint256 totalAmount) public betAmounts;
+    mapping(uint256 => bool) public matchIsSettled;
 
 
     constructor(ParimutuelSportsBetting _target, address[] memory _actors) {
@@ -80,53 +97,59 @@ contract ParimutuelHandler is Test {
         owner = _actors[0];
     }
 
-    function createMatch(string memory team1Name, string memory team2Name, string memory description, uint256 startTime) public {
-        vm.startPrank(owner); // Trivial, already tested 
-        
-        try parimutuel.createMatch(team1Name, team2Name, description, bound(startTime, 60 minutes, 30 days)) {
-            ghost_matchesCount++;
-        } catch (bytes memory lowLevelData) {
-            bytes4 selector = bytes4(lowLevelData);
-            if (selector != ParimutuelSportsBetting.InvalidStartTime.selector) {
-                console.log("UNKNOWN ERROR in createMatch");
-                console.logBytes(lowLevelData);
-                console.log("params");
-                console.log(team1Name);
-                console.log(team2Name);
-                console.log(description);
-                console.log(startTime);
-            }
-        }
-        vm.stopPrank();
+    function createMatch(string memory t1, string memory t2, string memory desc, uint256 startTime) public {
+        uint256 start = bound(startTime, block.timestamp + 1, block.timestamp + 30 days);
+        vm.prank(owner);
+        parimutuel.createMatch(t1, t2, desc, start);
+        ghost_matchesCount++;
     }
 
-    function placeBet(
-        uint256 _value, uint256 _matchId, uint8 _outcome, uint256 _actor
-    ) public {
-        if(ghost_matchesCount==0) return; // still not creates nothing
+    function placeBet(uint256 _value, uint256 _matchId, uint8 _outcome, uint256 _actorIdx) public {
+        if(ghost_matchesCount == 0) return;
         
-        _value = bound(_value, 1, 10 ether);
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+        uint8 outcome = uint8(bound(_outcome, 1, 3));
+        address actor = actors[bound(_actorIdx, 1, actors.length - 1)];
+        uint256 amount = bound(_value, 1, address(actor).balance);
 
-        uint256 matchId = bound(_matchId, 0, ghost_matchesCount-1); 
-        uint8 outcome = uint8(bound(_outcome, 1, 3)); 
+        vm.prank(actor);
+        parimutuel.placeBet{ value: amount }(matchId, outcome);
+        betAmounts[matchId] += amount;
+        betAmountsPerOutcome[matchId][outcome] += amount;
+        ghost_totalDeposited += amount;
+    }
 
-        vm.startPrank(actors[bound(_actor, 1, 100)]);        
+    function settleMatch(uint256 _matchId, uint8 _winningOutcome) public {
+        if(ghost_matchesCount == 0) return;
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+        uint8 winOutcome = uint8(bound(_winningOutcome, 1, 3));
 
-        try parimutuel.placeBet{ value: _value }(matchId, outcome) {
-            betAmounts[matchId] += _value;
-            betAmountsPerOutcome[matchId][outcome] += _value;
-        } catch (bytes memory lowLevelData) {
-            bytes4 selector = bytes4(lowLevelData);
-            if (selector != ParimutuelSportsBetting.BettingClosed.selector) {
-                console.log("UNKNOWN ERROR in placeBet");
-                console.logBytes(lowLevelData);
-                console.log("params");
-                console.log(matchId);
-                console.log(outcome);
-            }
-        }
+        vm.prank(owner);
+        parimutuel.settleMatch(matchId, winOutcome);
+        matchIsSettled[matchId] = true;
+    }
 
-        vm.stopPrank();
+    function claimWinnings(uint256 _matchId, uint256 _actorIdx) public {
+        if(ghost_matchesCount == 0) return;
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+        address actor = actors[bound(_actorIdx, 1, actors.length - 1)];
+
+        uint256 balanceBefore = actor.balance;
+        vm.prank(actor);
+        parimutuel.claimWinnings(matchId);
+        uint256 balanceAfter = actor.balance;
+        ghost_totalWithdrawn += (balanceAfter - balanceBefore);
+    }
+
+    function withdrawFees(uint256 _matchId) public {
+        if(ghost_matchesCount == 0) return;
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+
+        uint256 balanceBefore = owner.balance;
+        vm.prank(owner);
+        parimutuel.withdrawFees(matchId);
+        uint256 balanceAfter = owner.balance;
+        ghost_totalWithdrawn += (balanceAfter - balanceBefore);
     }
 
     // utils 
@@ -136,6 +159,7 @@ contract ParimutuelHandler is Test {
         vm.warp(amount);
         vm.roll(block.number + (amount / 12)); 
     }
+
 }
 
 
