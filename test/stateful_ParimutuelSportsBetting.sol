@@ -36,11 +36,6 @@ contract ParimutuelStatefulTest is Test {
         handler = new ParimutuelHandler(parimutuel, actors);
 
         targetContract(address(handler));
-
-        // targetSelector(FuzzSelector({
-        //     addr: address(handler),
-        //     selectors: selectors
-        // }));
     }
 
     /// @dev Invariant: Contract balance must always match our ghost accounting
@@ -65,6 +60,16 @@ contract ParimutuelStatefulTest is Test {
         }
     }
 
+    // the total balance deposited by an user should be the same as the sum of its correspondant values for each outcome on the bets storage variable
+    function invariant_userTotalDeposits() public view {
+        for(uint256 i = 0; i<handler.ghost_matchesCount(); i++) { // for each match
+            for(uint8 j=1; j< actors.length; j++) {  // for each user 
+                    uint256 totalUserBets = parimutuel.bets(i,actors[j],1) + parimutuel.bets(i,actors[j],2) + parimutuel.bets(i,actors[j],3) ;
+                    assertEq(totalUserBets, handler.userTotalBets(i, actors[j]), "error in user total deposits");
+            }
+        }
+    }
+
     /// @dev Invariant: Rake cannot exceed the defined 3% BPS
     function invariant_rakeLimit() public view {
         for (uint256 i = 0; i < handler.ghost_matchesCount(); i++) {
@@ -72,6 +77,30 @@ contract ParimutuelStatefulTest is Test {
             uint256 maxRake = (totalPool * parimutuel.RAKE_PERCENT()) / parimutuel.BPS();
             assertLe(rakeAmount, maxRake, "Rake exceeded 3%");
         }
+    }
+
+    /// @dev Invariant: If a match is cancelled, the total amount claimed via refunds 
+    /// should never exceed the total amount bet on that match.
+    function invariant_refundCap() public view {
+        for (uint256 i = 0; i < handler.ghost_matchesCount(); i++) {
+            if (handler.matchIsCancelled(i)) {
+                uint256 totalBet = handler.betAmounts(i);
+                uint256 totalRefunded = handler.ghost_refundsClaimed(i);
+                
+                assertLe(totalRefunded, totalBet, "Refunded more than total pool");
+            }
+        }
+    }
+
+    /// @dev Invariant: Users cannot claim both a refund and winnings.
+    /// This is implicitly handled by the contract's `hasClaimed` mapping, 
+    /// but we verify it via the global contract balance vs ghost accounting.
+    function invariant_globalAccounting() public view {
+        uint256 totalIn = handler.ghost_totalDeposited();
+        uint256 totalOut = handler.ghost_totalWithdrawn();
+        
+        // The contract balance should exactly match the difference
+        assertEq(address(parimutuel).balance, totalIn - totalOut, "Accounting leak detected");
     }
 }
 
@@ -88,7 +117,10 @@ contract ParimutuelHandler is Test {
 
     mapping(uint256 matchId => mapping(uint8 outcome => uint256 totalAmount)) public betAmountsPerOutcome;
     mapping(uint256 matchId => uint256 totalAmount) public betAmounts;
+    mapping(uint256 matchId => mapping(address user => uint256 totalAmount)) public userTotalBets;
     mapping(uint256 => bool) public matchIsSettled;
+    mapping(uint256 => bool) public matchIsCancelled;
+    mapping(uint256 => uint256) public ghost_refundsClaimed;
 
 
     constructor(ParimutuelSportsBetting _target, address[] memory _actors) {
@@ -113,10 +145,12 @@ contract ParimutuelHandler is Test {
         uint256 amount = bound(_value, 1, address(actor).balance);
 
         vm.prank(actor);
-        parimutuel.placeBet{ value: amount }(matchId, outcome);
-        betAmounts[matchId] += amount;
-        betAmountsPerOutcome[matchId][outcome] += amount;
-        ghost_totalDeposited += amount;
+        try parimutuel.placeBet{ value: amount }(matchId, outcome) {
+            betAmounts[matchId] += amount;
+            betAmountsPerOutcome[matchId][outcome] += amount;
+            ghost_totalDeposited += amount;
+            userTotalBets[matchId][actor] += amount;
+        } catch {}
     }
 
     function settleMatch(uint256 _matchId, uint8 _winningOutcome) public {
@@ -150,6 +184,29 @@ contract ParimutuelHandler is Test {
         parimutuel.withdrawFees(matchId);
         uint256 balanceAfter = owner.balance;
         ghost_totalWithdrawn += (balanceAfter - balanceBefore);
+    }
+
+    function cancelMatch(uint256 _matchId) public {
+        if(ghost_matchesCount == 0) return;
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+
+        vm.prank(owner);
+        parimutuel.cancelMatch(matchId);
+        matchIsCancelled[matchId] = true;
+    }
+
+    function claimRefund(uint256 _matchId, uint256 _actorIdx) public {
+        if(ghost_matchesCount == 0) return;
+        uint256 matchId = bound(_matchId, 0, ghost_matchesCount - 1);
+        address actor = actors[bound(_actorIdx, 1, actors.length - 1)];
+
+        uint256 balanceBefore = actor.balance;
+        vm.prank(actor);
+        parimutuel.claimRefund(matchId);
+        uint256 balanceAfter = actor.balance;
+        uint256 amountRefunded = balanceAfter - balanceBefore;            
+        ghost_totalWithdrawn += amountRefunded;
+        ghost_refundsClaimed[matchId] += amountRefunded;
     }
 
     // utils 

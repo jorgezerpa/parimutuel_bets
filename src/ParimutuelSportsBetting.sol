@@ -48,7 +48,7 @@ contract ParimutuelSportsBetting is Ownable, ReentrancyGuard {
     uint256 public constant BPS = 10000;
 
     mapping(uint256 => Match) public matches;
-    mapping(uint256 => mapping(address => mapping(uint8 => uint256))) public bets;
+    mapping(uint256 matchId => mapping(address user  => mapping(uint8 outcome => uint256 amount))) public bets;
     mapping(uint256 => mapping(address => bool)) public hasClaimed;
 
     uint256 public nextMatchId;

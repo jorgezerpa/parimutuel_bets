@@ -1,3 +1,17 @@
 # Main invariants
 - Winners claimed amount should always be bigger than their initial bet. 
 - If the totalPool for a match is 0, then each outcome pool should be 0 too. 
+- Solvency Invariant: The contract's address(this).balance must always be greater than or equal to the sum of all pending payouts, unclaimed refunds, and unwithdrawn fees.
+- Rake Cap: rakeAmount for any match must never exceed (totalPool * RAKE_PERCENT) / BPS.
+- Payout Logic: The total amount distributed to winners + fees withdrawn must be $\le$ the totalPool of that match.
+- Claim Integrity: hasClaimed[matchId][user] can only be true if the user actually received a payout or refund.
+- Settlement Finality: Once settled is true, the totalPool and outcomePools for that match should remain constant (immutable).
+- Refund Equality: In a cancelled match or one with no winners, the total amount refundable must equal the total amount deposited.
+- Users can either get their funds back through a refund or through winnings, but never both.
+- the total balance deposited by an user should be the same as the sum of its correspondant values for each outcome on the bets storage variable.
+- Refund Integrity: In a cancelled match, the sum of all successful `claimRefund` calls must eventually equal the totalPool of that match.
+- The maximum possible succesfull calls to `claimRefund` should be less or equal than the total amount of successfull calls to `placeBet`. (not strictly equal because a user can call multiple times `placeBet`).
+- No Double Dipping: A user should never be able to call `claimRefund` and `claimWinnings` for the same match.
+- A user should never be able to call `claimRefund` more than once for the same match.
+- No-Winner Solvency: If a match is settled with an outcome that has 0 bettors, the total pool must be available for refund. 
+- If no there are no winners for a match (due to cancellation or no bets on the winning outcome pool) the protocol does not take any kind of fees.
